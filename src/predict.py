@@ -1,5 +1,6 @@
-"""Load model_bundle.joblib dan jalankan prediksi + penjelasan SHAP untuk satu
-input form dari app.py."""
+"""Load model_bundle.joblib dan jalankan prediksi + penjelasan SHAP, baik untuk
+satu input form (predict_one, mode "Input Manual") maupun banyak pesanan
+sekaligus dari upload spreadsheet (predict_batch, mode "Upload Spreadsheet")."""
 from pathlib import Path
 
 import joblib
@@ -104,3 +105,55 @@ def predict_one(raw: dict, bundle: dict) -> dict:
         "shap_contrib": contrib,
         "row_numeric": row_numeric,
     }
+
+
+def predict_batch(order_level_df: pd.DataFrame, bundle: dict) -> pd.DataFrame:
+    """order_level_df: hasil src.raw_data.load_order_level(file, require_target=False)
+    -- satu baris per Order ID, dari upload spreadsheet "Order SKU List" mentah.
+    Mengembalikan DataFrame ringkasan hasil prediksi utk SEMUA pesanan sekaligus
+    (SHAP dihitung satu kali untuk seluruh batch, bukan per-baris, supaya cepat)."""
+    num_features = bundle["num_features"]
+    te_cols = bundle["te_cols"]
+    onehot_cols = bundle["onehot_cols"]
+    ordered_cols = num_features + te_cols + onehot_cols
+
+    X = order_level_df[ordered_cols].copy()
+    X[num_features] = X[num_features].replace([np.inf, -np.inf], np.nan)
+    X[num_features] = X[num_features].apply(lambda s: s.fillna(s.median()))
+    for c in te_cols + onehot_cols:
+        X[c] = X[c].astype(str).fillna("UNK").replace("nan", "UNK")
+
+    for c in onehot_cols:
+        X[c] = _safe_label_transform(bundle["label_encoders"][c], X[c])
+
+    pipe = bundle["pipeline"]
+    proba = pipe.predict_proba(X)[:, 1]
+    threshold = bundle["threshold"]
+    predicted_label = (proba >= threshold).astype(int)
+
+    te_step = pipe.named_steps["te"]
+    clf_step = pipe.named_steps["clf"]
+    X_numeric = te_step.transform(X)
+
+    explainer = shap.TreeExplainer(clf_step)
+    explanation = explainer(X_numeric)
+    shap_values = np.asarray(explanation.values)  # shape (n_rows, n_kolom_numerik)
+
+    top_factor = []
+    for i in range(len(X_numeric)):
+        row_shap = shap_values[i]
+        top_idx = int(np.argmax(np.abs(row_shap)))
+        feat = X_numeric.columns[top_idx]
+        label = FEATURE_LABELS_ID.get(feat, feat)
+        arah = "meningkatkan" if row_shap[top_idx] > 0 else "menurunkan"
+        top_factor.append(f"{label} ({arah} risiko)")
+
+    result = pd.DataFrame({
+        "Order ID": order_level_df["Order ID"].values,
+        "Status Saat Ini": order_level_df["order_status"].values,
+        "Probabilitas Dibatalkan": proba,
+        "Prediksi": np.where(predicted_label == 1, "Berpotensi Dibatalkan", "Kemungkinan Selesai"),
+        "Faktor Utama": top_factor,
+    }).sort_values("Probabilitas Dibatalkan", ascending=False).reset_index(drop=True)
+
+    return result

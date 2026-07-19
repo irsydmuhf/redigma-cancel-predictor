@@ -4,21 +4,29 @@ Demo interaktif berbasis Streamlit dari skripsi **"Klasifikasi Pembatalan Pesana
 E-Commerce Menggunakan Logistic Regression dan XGBoost, dan Analisis Faktor"**
 (Irsyad Muhamad Firdaus, Teknik Informatika, Universitas Muhammadiyah Magelang).
 
-User mengisi form data pesanan (produk, transaksi, pengiriman, waktu), lalu
-aplikasi memprediksi potensi pembatalan pesanan memakai model **XGBoost
-skenario S3** (skenario dengan Macro F1 tertinggi di antara 4 skenario yang
-dibandingkan di Bab 4), lengkap dengan penjelasan **SHAP** per-prediksi.
+Ada dua mode di aplikasinya:
+
+- **Upload Spreadsheet** (mode utama) -- upload file ekspor **"Order SKU List"**
+  langsung dari platform (xlsx apa adanya, tanpa perlu diedit), app mengagregasi
+  baris-baris SKU per Order ID lalu memprediksi semua pesanan sekaligus, hasilnya
+  bisa di-download sebagai CSV.
+- **Input Manual** -- form satu pesanan untuk uji skenario "what-if" cepat.
+
+Model yang dipakai: **XGBoost skenario S3** (skenario dengan Macro F1 tertinggi
+di antara 4 skenario yang dibandingkan di Bab 4), lengkap dengan penjelasan
+**SHAP** per-prediksi.
 
 ## Struktur folder
 
 ```
 .
-├── app.py                  # Halaman utama Streamlit (form + hasil prediksi)
+├── app.py                  # Halaman utama Streamlit (2 tab: upload spreadsheet & input manual)
 ├── src/
 │   ├── schema.py            # Konstanta bersama (nama kolom, hyperparameter, threshold)
+│   ├── raw_data.py          # Agregasi baris-SKU mentah -> level pesanan (dipakai train.py & app.py)
 │   ├── target_encoder.py    # SmoothedTargetEncoder (disalin dari pipeline skripsi)
-│   ├── features.py          # Ubah input form -> fitur model
-│   ├── predict.py           # Load model, prediksi, hitung SHAP
+│   ├── features.py          # Ubah input form manual -> fitur model
+│   ├── predict.py           # Load model, prediksi (satu & batch), hitung SHAP
 │   └── reference_data.py    # Opsi dropdown & info model untuk UI
 ├── models/
 │   └── model_bundle.joblib  # Dihasilkan oleh scripts/train.py (ikut di-commit ke git)
@@ -42,8 +50,26 @@ konsisten dengan angka yang dipertahankan di sidang, `scripts/train.py` mereplik
 pipeline itu persis, bukan versi sederhana di narasi Bab 3.
 
 Dua kolom (`Fulfillment Type` dan `Normal or Pre-order`) tidak ditanyakan di form
-karena di seluruh data training nilainya cuma satu macam ("Fulfillment by seller"
-dan "Normal") -- lihat `src/schema.FIXED_VALUES`.
+manual karena di seluruh data training nilainya cuma satu macam ("Fulfillment by
+seller" dan "Normal") -- lihat `src/schema.FIXED_VALUES`.
+
+## Mode "Upload Spreadsheet" -- format file yang diterima
+
+File yang diupload harus persis format ekspor **"Order SKU List"** platform
+(satu baris per SKU/lini pesanan, kolom yang sama seperti `REQUIRED_RAW_COLUMNS`
+di `src/raw_data.py`) -- ini format yang sama dengan sumber data training, jadi
+tidak perlu diedit/dirapikan dulu sebelum upload. Berbeda dengan `train.py`
+(yang cuma memakai pesanan berstatus final -- selesai/dibatalkan, untuk
+training), mode upload ini memprediksi **SEMUA** pesanan di file, termasuk yang
+masih berjalan (justru itu yang mau diketahui risikonya).
+
+Catatan teknis: sebagian ekspor "Order SKU List" (mis. dari TikTok Shop Seller
+Center) punya metadata dimensi xlsx yang salah/tidak lengkap -- Microsoft Excel
+mengabaikannya dan tetap membaca semua kolom, tapi pembaca xlsx yang lebih ketat
+bisa salah baca (cuma dapat 1 kolom). `src/raw_data.py` sudah menangani ini
+(pakai `engine_kwargs={"read_only": False}`) -- kalau suatu saat upload gagal
+dengan pesan "kolom tidak ditemukan" padahal filenya kelihatan normal di Excel,
+ini kemungkinan besar penyebabnya.
 
 ## Setup
 
