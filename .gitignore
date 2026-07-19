@@ -1,0 +1,25 @@
+# Data mentah -- JANGAN ikut di-commit (bisa besar & berisi data transaksi baris-per-baris)
+data/*.xlsx
+data/*.xls
+data/*.csv
+!data/.gitkeep
+
+# Model HASIL training (models/model_bundle.joblib) SENGAJA TIDAK di-gitignore --
+# file itu justru harus ikut ter-commit karena Streamlit Community Cloud hanya
+# menjalankan app.py, tidak menjalankan scripts/train.py otomatis.
+
+# Python
+__pycache__/
+*.pyc
+.venv/
+venv/
+env/
+*.egg-info/
+
+# OS / editor
+.DS_Store
+.vscode/
+.idea/
+
+# Streamlit
+.streamlit/secrets.toml
