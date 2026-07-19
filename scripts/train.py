@@ -156,6 +156,30 @@ def main():
     for k, v in metrics_used_threshold.items():
         log(f"  {k:12s}: {v}")
 
+    # Sapuan precision/recall/F1 di berbagai threshold (0,05-0,95) pada data uji --
+    # dipakai app.py utk slider threshold interaktif (biar precision/recall trade-off
+    # kelihatan, bukan cuma satu angka fixed). Sama semangatnya dengan Tabel 4.2 skripsi.
+    threshold_sweep = []
+    for t in np.arange(0.05, 0.96, 0.05):
+        t = round(float(t), 2)
+        yp_t = (pp >= t).astype(int)
+        threshold_sweep.append({
+            "threshold": t,
+            "precision": precision_score(y_test, yp_t, zero_division=0),
+            "recall": recall_score(y_test, yp_t, zero_division=0),
+            "f1_cancel": f1_score(y_test, yp_t, pos_label=1, zero_division=0),
+            "n_flagged": int(yp_t.sum()),
+            "n_flagged_pct": float(yp_t.mean()),
+        })
+    log()
+    log("--- Sapuan threshold (dipakai untuk slider di app.py) ---")
+    for row in threshold_sweep:
+        log(
+            f"  thr={row['threshold']:.2f} | precision={row['precision']:.3f} "
+            f"recall={row['recall']:.3f} f1_cancel={row['f1_cancel']:.3f} "
+            f"flagged={row['n_flagged_pct']:.1%}"
+        )
+
     # Referensi dropdown untuk form Streamlit: kategori yang benar-benar dilihat model saat training.
     dropdown_options = {c: sorted(o[c].dropna().astype(str).unique().tolist()) for c in TE_COLS}
     dropdown_options.update({c: list(le.classes_) for c, le in label_encoders.items() if c not in FIXED_VALUES})
@@ -170,6 +194,7 @@ def main():
         "dropdown_options": dropdown_options,
         "metrics_default_threshold": metrics_default_threshold,
         "metrics_used_threshold": metrics_used_threshold,
+        "threshold_sweep": threshold_sweep,
         "trained_at": datetime.datetime.now().isoformat(timespec="seconds"),
         "n_rows_trained": int(len(o)),
     }

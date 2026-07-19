@@ -63,7 +63,14 @@ def _safe_label_transform(le, values: pd.Series) -> pd.Series:
     return le.transform(safe_values)
 
 
-def predict_one(raw: dict, bundle: dict) -> dict:
+def predict_one(raw: dict, bundle: dict, threshold: float = None) -> dict:
+    """threshold: kalau None, pakai default hasil training (bundle['threshold']).
+    Boleh di-override (mis. dari slider di app.py) tanpa perlu training ulang --
+    cuma menentukan batas Berpotensi Dibatalkan / Kemungkinan Selesai, bukan
+    mengubah probabilitas mentahnya."""
+    if threshold is None:
+        threshold = bundle["threshold"]
+
     row = build_feature_row(raw)
 
     row_encoded = row.copy()
@@ -72,7 +79,6 @@ def predict_one(raw: dict, bundle: dict) -> dict:
 
     pipe = bundle["pipeline"]
     proba_cancel = float(pipe.predict_proba(row_encoded)[0, 1])
-    threshold = bundle["threshold"]
     predicted_label = 1 if proba_cancel >= threshold else 0
 
     te_step = pipe.named_steps["te"]
@@ -110,8 +116,10 @@ def predict_one(raw: dict, bundle: dict) -> dict:
 def predict_batch(order_level_df: pd.DataFrame, bundle: dict) -> pd.DataFrame:
     """order_level_df: hasil src.raw_data.load_order_level(file, require_target=False)
     -- satu baris per Order ID, dari upload spreadsheet "Order SKU List" mentah.
-    Mengembalikan DataFrame ringkasan hasil prediksi utk SEMUA pesanan sekaligus
-    (SHAP dihitung satu kali untuk seluruh batch, bukan per-baris, supaya cepat)."""
+    Mengembalikan DataFrame probabilitas + faktor utama utk SEMUA pesanan sekaligus
+    (SHAP dihitung satu kali untuk seluruh batch, bukan per-baris, supaya cepat).
+    TIDAK menyertakan kolom "Prediksi" (label Berpotensi Dibatalkan/Selesai) --
+    itu bergantung threshold yang dipilih user, lihat label_predictions()."""
     num_features = bundle["num_features"]
     te_cols = bundle["te_cols"]
     onehot_cols = bundle["onehot_cols"]
@@ -128,8 +136,6 @@ def predict_batch(order_level_df: pd.DataFrame, bundle: dict) -> pd.DataFrame:
 
     pipe = bundle["pipeline"]
     proba = pipe.predict_proba(X)[:, 1]
-    threshold = bundle["threshold"]
-    predicted_label = (proba >= threshold).astype(int)
 
     te_step = pipe.named_steps["te"]
     clf_step = pipe.named_steps["clf"]
@@ -152,8 +158,28 @@ def predict_batch(order_level_df: pd.DataFrame, bundle: dict) -> pd.DataFrame:
         "Order ID": order_level_df["Order ID"].values,
         "Status Saat Ini": order_level_df["order_status"].values,
         "Probabilitas Dibatalkan": proba,
-        "Prediksi": np.where(predicted_label == 1, "Berpotensi Dibatalkan", "Kemungkinan Selesai"),
         "Faktor Utama": top_factor,
-    }).sort_values("Probabilitas Dibatalkan", ascending=False).reset_index(drop=True)
-
+    })
     return result
+
+
+def label_predictions(results: pd.DataFrame, threshold: float) -> pd.DataFrame:
+    """Tambahkan kolom "Prediksi" ke hasil predict_batch() berdasarkan threshold
+    pilihan user, lalu urutkan dari probabilitas tertinggi. Murah secara komputasi
+    (tidak menghitung ulang SHAP), jadi aman dipanggil tiap kali slider threshold
+    digeser di app.py."""
+    out = results.copy()
+    out["Prediksi"] = np.where(
+        out["Probabilitas Dibatalkan"] >= threshold, "Berpotensi Dibatalkan", "Kemungkinan Selesai"
+    )
+    cols = ["Order ID", "Status Saat Ini", "Probabilitas Dibatalkan", "Prediksi", "Faktor Utama"]
+    return out[cols].sort_values("Probabilitas Dibatalkan", ascending=False).reset_index(drop=True)
+
+
+def nearest_threshold_stats(bundle: dict, threshold: float) -> dict:
+    """Cari baris threshold_sweep (dihitung sekali saat training di data uji)
+    paling dekat dengan nilai threshold yang dipilih user di slider."""
+    sweep = bundle.get("threshold_sweep")
+    if not sweep:
+        return None
+    return min(sweep, key=lambda row: abs(row["threshold"] - threshold))

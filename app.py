@@ -10,10 +10,9 @@ import datetime
 import matplotlib
 matplotlib.use("Agg")
 import matplotlib.pyplot as plt
-import pandas as pd
 import streamlit as st
 
-from src.predict import load_bundle, predict_batch, predict_one
+from src.predict import label_predictions, load_bundle, nearest_threshold_stats, predict_batch, predict_one
 from src.raw_data import load_order_level
 from src.reference_data import format_model_info, get_dropdown_options
 
@@ -33,6 +32,34 @@ except FileNotFoundError as e:
 
 options = get_dropdown_options(bundle)
 
+# =============================================================================
+# Sidebar: threshold klasifikasi -- dibagi ke kedua tab, supaya trade-off
+# precision/recall langsung kelihatan & bisa diubah tanpa mengubah kode.
+# =============================================================================
+with st.sidebar:
+    st.header("⚙️ Threshold Klasifikasi")
+    threshold = st.slider(
+        "Ambang batas probabilitas",
+        min_value=0.05, max_value=0.95, value=float(bundle["threshold"]), step=0.05,
+        help="Di atas nilai ini, pesanan diberi label 'Berpotensi Dibatalkan'.",
+    )
+    stats = nearest_threshold_stats(bundle, threshold)
+    if stats:
+        st.caption(f"Performa historis pada data uji (threshold≈{stats['threshold']:.2f}):")
+        c1, c2 = st.columns(2)
+        c1.metric("Precision", f"{stats['precision']:.0%}")
+        c2.metric("Recall", f"{stats['recall']:.0%}")
+        st.caption(f"F1 (kelas dibatalkan): {stats['f1_cancel']:.3f}")
+        st.caption(
+            f"≈{stats['n_flagged_pct']:.0%} dari seluruh pesanan di data uji akan ter-flag pada threshold ini."
+        )
+    st.divider()
+    st.caption(
+        f"Default skripsi: **{bundle['threshold']}** (F1 kelas 'dibatalkan' tertinggi, Sub-bab 4.2.3). "
+        "Naikkan threshold untuk lebih sedikit *false alarm* (presisi naik, recall turun); turunkan "
+        "untuk lebih jarang kelewatan pesanan yang benar-benar akan dibatalkan (recall naik, presisi turun)."
+    )
+
 st.title("📦 Prediksi Potensi Pembatalan Pesanan")
 st.caption(
     "Demo interaktif dari skripsi klasifikasi pembatalan pesanan e-commerce REDIGMA "
@@ -42,10 +69,10 @@ with st.expander("ℹ️ Tentang model & keterbatasannya", expanded=False):
     st.markdown(
         f"""
 - Model: **XGBoost** (skenario S3 pada Bab 4 skripsi -- Macro F1 tertinggi di antara 4 skenario yang dibandingkan).
-- Threshold klasifikasi: **{bundle['threshold']}** (bukan 0,5 default -- sesuai temuan Sub-bab 4.2.3 bahwa 0,5 bukan titik operasi optimal untuk kelas minoritas "dibatalkan").
+- Threshold klasifikasi bisa diatur di sidebar kiri (default {bundle['threshold']}, sesuai Sub-bab 4.2.3 -- 0,5 terbukti BUKAN titik operasi optimal untuk kasus ini).
 - {format_model_info(bundle)}
 - Fitur risiko per wilayah/metode bayar/kategori/SKU dihitung dari riwayat data training (*smoothed target encoding*) -- kombinasi yang sangat jarang muncul di data training akan condong ke rata-rata global, bukan kesalahan sistem.
-- Performa model tergolong **moderat** (ROC-AUC 0,59 pada data uji) -- hasil dari tool ini sebaiknya dipakai sebagai salah satu sinyal pendukung, bukan keputusan tunggal.
+- Performa model tergolong **moderat** (ROC-AUC 0,59 pada data uji). Pada threshold rendah, WAJAR banyak pesanan yang sebenarnya akan selesai normal ikut ter-flag (precision rendah) -- itu trade-off yang disengaja demi menangkap lebih banyak pesanan yang benar-benar akan dibatalkan (recall tinggi). Lihat angka precision/recall di sidebar untuk threshold yang sedang dipilih. Hasil dari tool ini sebaiknya jadi salah satu sinyal pendukung, bukan keputusan tunggal.
         """
     )
 
@@ -65,20 +92,29 @@ with tab_batch:
     uploaded = st.file_uploader("File Order SKU List (.xlsx)", type=["xlsx"])
 
     if uploaded is not None:
-        try:
-            with st.spinner("Membaca & mengagregasi data pesanan..."):
-                order_level = load_order_level(uploaded, require_target=False)
-        except ValueError as e:
-            st.error(str(e))
-            order_level = None
-        except Exception as e:  # format file tidak terbaca sama sekali, dsb.
-            st.error(f"Gagal membaca file: {e}")
-            order_level = None
+        file_key = (uploaded.name, uploaded.size)
+        if st.session_state.get("batch_file_key") != file_key:
+            try:
+                with st.spinner("Membaca & mengagregasi data pesanan..."):
+                    order_level = load_order_level(uploaded, require_target=False)
+            except ValueError as e:
+                st.error(str(e))
+                order_level = None
+            except Exception as e:  # format file tidak terbaca sama sekali, dsb.
+                st.error(f"Gagal membaca file: {e}")
+                order_level = None
 
-        if order_level is not None:
-            st.success(f"Berhasil membaca {len(order_level)} pesanan unik dari file.")
-            with st.spinner(f"Memprediksi {len(order_level)} pesanan..."):
-                results = predict_batch(order_level, bundle)
+            if order_level is not None:
+                with st.spinner(f"Memprediksi {len(order_level)} pesanan..."):
+                    st.session_state["batch_results_raw"] = predict_batch(order_level, bundle)
+                st.session_state["batch_n_orders"] = len(order_level)
+                st.session_state["batch_file_key"] = file_key
+            else:
+                st.session_state.pop("batch_results_raw", None)
+
+        if "batch_results_raw" in st.session_state:
+            st.success(f"Berhasil membaca {st.session_state['batch_n_orders']} pesanan unik dari file.")
+            results = label_predictions(st.session_state["batch_results_raw"], threshold)
 
             n_total = len(results)
             n_risk = int((results["Prediksi"] == "Berpotensi Dibatalkan").sum())
@@ -86,6 +122,10 @@ with tab_batch:
             m1.metric("Total pesanan", n_total)
             m2.metric("Berpotensi dibatalkan", n_risk)
             m3.metric("Persentase", f"{(n_risk / n_total * 100 if n_total else 0):.1f}%")
+            st.caption(
+                f"Dihitung dengan threshold {threshold:.2f} (atur di sidebar kiri) -- "
+                "geser slider untuk lihat perubahan jumlah yang ter-flag tanpa upload ulang."
+            )
 
             st.dataframe(
                 results.style.format({"Probabilitas Dibatalkan": "{:.1%}"}),
@@ -170,7 +210,7 @@ with tab_manual:
             "created": datetime.datetime.combine(created_date, created_time),
         }
 
-        result = predict_one(raw, bundle)
+        result = predict_one(raw, bundle, threshold=threshold)
 
         st.divider()
         st.subheader("Hasil Prediksi")
@@ -182,7 +222,7 @@ with tab_manual:
             else:
                 st.success(f"✅ {result['predicted_text']}")
             st.metric("Probabilitas dibatalkan", f"{result['proba_cancel']:.1%}")
-            st.caption(f"Threshold yang dipakai: {result['threshold']:.0%}")
+            st.caption(f"Threshold yang dipakai: {result['threshold']:.0%} (atur di sidebar kiri)")
 
         with res_col2:
             st.markdown("**Kontribusi fitur terhadap prediksi ini (SHAP)**")
