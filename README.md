@@ -50,16 +50,18 @@ Alurnya:
 └── .gitignore
 ```
 
-## Kenapa modelnya butuh 29 kolom input, bukan cuma 15 fitur di Bab 3?
+## Kenapa modelnya cuma pakai 16 kolom, bukan 29 fitur hasil rekayasa fitur?
 
-Bab 3 skripsi menarasikan versi sederhana (15 fitur) untuk keterbacaan, tapi
-model yang **benar-benar dilaporkan performanya** di Tabel 4.1/4.1b (Macro F1 =
-0,5512) memakai fitur yang lebih lengkap dari `02_pipeline/redigma_pipeline_v2.py`
-pada repo skripsi -- termasuk fitur marketing yang diekstrak dari nama produk
-(`bundle_size`, `n_hype_words`, `has_promo_terms`, `name_length`) dan beberapa
-kolom operasional (berat, jumlah baris pesanan, channel, dsb). Supaya demo ini
-konsisten dengan angka yang dipertahankan di sidang, `scripts/train.py` mereplikasi
-pipeline itu persis, bukan versi sederhana di narasi Bab 3.
+Bab 3 skripsi awalnya merekayasa 29 fitur (termasuk fitur marketing dari nama
+produk seperti `bundle_size`, `n_hype_words`, dan fitur waktu seperti `hour`,
+`is_weekend`), tapi model yang **benar-benar dilaporkan performanya** di Tabel
+4.1/4.1b (S3: Macro F1 = 0,5249) hanya memakai 16 fitur yang lolos uji
+signifikansi statistik (Sub-bab 4.3.1-4.3.2), mengikuti
+`02_pipeline/redigma_pipeline_v5_selected.py` pada repo skripsi. 13 fitur
+lainnya terbukti tidak signifikan secara statistik dan dibuang dari model
+final. Supaya demo ini konsisten dengan angka yang dipertahankan di sidang,
+`scripts/train.py` mereplikasi pipeline v5 tersebut persis -- lihat
+`src/schema.py` untuk daftar 16 fitur yang dipakai.
 
 ## Format file yang diterima
 
@@ -112,8 +114,8 @@ pip install -r requirements.txt
 3. Cek output di terminal -- bandingkan dengan angka referensi dari skripsi:
 
    ```
-   Referensi dari skripsi (Tabel 4.1, S3: XGBoost + Imbalanced):
-     accuracy=0.8448 precision=0.3333 recall=0.1311 macro_f1=0.5512 roc_auc=0.5876
+   Referensi dari skripsi (Tabel 4.1, S3: XGBoost + Imbalanced, 16 fitur terpilih):
+     accuracy=0.8430 precision=0.2773 recall=0.0902 macro_f1=0.5249 roc_auc=0.5875
    ```
 
    Kalau datanya sama dengan yang dipakai skripsi, angka yang keluar seharusnya
