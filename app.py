@@ -139,9 +139,6 @@ if uploaded is not None:
             with st.spinner(f"Menganalisis faktor penyebab {n_cancel} pesanan batal..."):
                 diag = diagnose_batch(cancelled, bundle)
 
-            st.divider()
-            st.subheader("Rekap Faktor Dominan Penyebab Pembatalan")
-
             recap = (
                 diag["Faktor Dominan"].value_counts()
                 .rename_axis("Faktor Dominan")
@@ -149,10 +146,80 @@ if uploaded is not None:
             )
             recap["Persentase"] = recap["Jumlah Pesanan"] / n_cancel * 100
 
+            def rasio_table(df, group_col, out_col, top_n=None):
+                t = (
+                    df.groupby(group_col)
+                    .agg(total=("target", "size"), batal=("target", lambda s: (s == 1).sum()))
+                    .assign(rasio=lambda d: d["batal"] / d["total"] * 100)
+                    .sort_values("batal", ascending=False)
+                )
+                if top_n:
+                    t = t.head(top_n)
+                return t.reset_index().rename(columns={
+                    group_col: out_col, "total": "Total Pesanan",
+                    "batal": "Jumlah Batal", "rasio": "Rasio Batal (%)",
+                })
+
+            def highlight(df):
+                return df.style.format({"Rasio Batal (%)": "{:.1f}%"}) \
+                    .background_gradient(subset=["Rasio Batal (%)"], cmap="Reds")
+
+            by_prov = rasio_table(scoped, "province", "Provinsi", top_n=10)
+            by_store = rasio_table(scoped, "store", "Nama Toko")
+            by_cat = rasio_table(scoped, "category", "Kategori Produk", top_n=10)
+
+            sku_lookup = get_sku_lookup()
+            scoped_prod = scoped.assign(
+                produk=scoped["sku"].apply(lambda s: map_sku_to_product(s, sku_lookup))
+            )
+            by_prod = rasio_table(scoped_prod, "produk", "Produk", top_n=10)
+
+            monthly = (
+                cancelled.assign(bulan=pd.to_datetime(cancelled["created"], errors="coerce").dt.to_period("M").astype(str))
+                .groupby("bulan").size().rename("Jumlah Batal").reset_index()
+                .sort_values("bulan")
+            )
+
+            # ------------------------------------------------------- ringkasan naratif
+            st.divider()
+            st.subheader("Ringkasan Temuan")
+            bullets = [
+                f"Dari **{n_scope}** pesanan pada cakupan filter, **{n_cancel}** "
+                f"({(n_cancel / n_scope * 100 if n_scope else 0):.1f}%) berstatus batal.",
+                f"Faktor paling sering menjadi penyebab dominan: **{recap.iloc[0]['Faktor Dominan']}** "
+                f"({recap.iloc[0]['Persentase']:.1f}% dari pesanan batal).",
+            ]
+            if not by_store.empty:
+                r = by_store.iloc[0]
+                bullets.append(f"Toko dengan pembatalan terbanyak: **{r['Nama Toko']}** "
+                                f"({int(r['Jumlah Batal'])} pesanan, rasio {r['Rasio Batal (%)']:.1f}%).")
+            if not by_prov.empty:
+                r = by_prov.iloc[0]
+                bullets.append(f"Provinsi dengan pembatalan terbanyak: **{r['Provinsi']}** "
+                                f"({int(r['Jumlah Batal'])} pesanan, rasio {r['Rasio Batal (%)']:.1f}%).")
+            if not by_cat.empty:
+                r = by_cat.iloc[0]
+                bullets.append(f"Kategori produk dengan pembatalan terbanyak: **{r['Kategori Produk']}** "
+                                f"({int(r['Jumlah Batal'])} pesanan, rasio {r['Rasio Batal (%)']:.1f}%).")
+            if not by_prod.empty:
+                r = by_prod.iloc[0]
+                bullets.append(f"Produk dengan pembatalan terbanyak: **{r['Produk']}** "
+                                f"({int(r['Jumlah Batal'])} pesanan, rasio {r['Rasio Batal (%)']:.1f}%).")
+            st.info("\n".join(f"- {b}" for b in bullets))
+            st.caption(
+                "Ringkasan berdasarkan jumlah pesanan batal terbanyak (bukan rasio tertinggi), "
+                "supaya tidak bias oleh kelompok dengan volume pesanan yang sangat kecil."
+            )
+
+            # ------------------------------------------------------- rekap faktor dominan
+            st.divider()
+            st.subheader("Rekap Faktor Dominan Penyebab Pembatalan")
+
             c1, c2 = st.columns([1, 1])
             with c1:
                 st.dataframe(
-                    recap.style.format({"Persentase": "{:.1f}%"}),
+                    recap.style.format({"Persentase": "{:.1f}%"})
+                    .background_gradient(subset=["Persentase"], cmap="Reds"),
                     use_container_width=True, height=380,
                 )
             with c2:
@@ -169,17 +236,13 @@ if uploaded is not None:
                 "Angka ini menunjukkan pola penyebab, bukan jaminan sebab-akibat tunggal."
             )
 
+            # ------------------------------------------------------- insight tambahan
             st.divider()
             st.subheader("Insight Tambahan")
 
             i1, i2 = st.columns(2)
             with i1:
                 st.markdown("**Tren bulanan pesanan batal**")
-                monthly = (
-                    cancelled.assign(bulan=pd.to_datetime(cancelled["created"], errors="coerce").dt.to_period("M").astype(str))
-                    .groupby("bulan").size().rename("Jumlah Batal").reset_index()
-                    .sort_values("bulan")
-                )
                 if not monthly.empty:
                     fig2, ax2 = plt.subplots(figsize=(5.5, 3.5))
                     ax2.plot(monthly["bulan"], monthly["Jumlah Batal"], marker="o", color="#d62728")
@@ -192,72 +255,41 @@ if uploaded is not None:
                     st.caption("Tanggal pesanan tidak terbaca, tren bulanan tidak dapat ditampilkan.")
 
             with i2:
-                st.markdown("**Rasio pembatalan per provinsi (top 10 volume batal)**")
-                by_prov = (
-                    scoped.groupby("province")
-                    .agg(total=("target", "size"), batal=("target", lambda s: (s == 1).sum()))
-                    .assign(rasio=lambda d: d["batal"] / d["total"] * 100)
-                    .sort_values("batal", ascending=False)
-                    .head(10)
-                    .reset_index()
-                    .rename(columns={"province": "Provinsi", "total": "Total Pesanan",
-                                      "batal": "Jumlah Batal", "rasio": "Rasio Batal (%)"})
-                )
-                st.dataframe(
-                    by_prov.style.format({"Rasio Batal (%)": "{:.1f}%"}),
-                    use_container_width=True, height=380,
-                )
+                st.markdown("**Komposisi faktor dominan per bulan (5 faktor teratas)**")
+                diag_dated = cancelled[["Order ID", "created"]].merge(diag, on="Order ID")
+                diag_dated["bulan"] = pd.to_datetime(diag_dated["created"], errors="coerce").dt.to_period("M").astype(str)
+                diag_dated = diag_dated[diag_dated["bulan"] != "NaT"]
+                top5 = recap["Faktor Dominan"].head(5).tolist()
+                diag_dated["kelompok"] = diag_dated["Faktor Dominan"].where(
+                    diag_dated["Faktor Dominan"].isin(top5), "Lainnya")
+                pivot = diag_dated.groupby(["bulan", "kelompok"]).size().unstack(fill_value=0).sort_index()
+                if not pivot.empty:
+                    fig3, ax3 = plt.subplots(figsize=(5.5, 3.5))
+                    bottom = None
+                    for col in pivot.columns:
+                        ax3.bar(pivot.index, pivot[col], bottom=bottom, label=col)
+                        bottom = pivot[col] if bottom is None else bottom + pivot[col]
+                    ax3.set_xlabel("Bulan")
+                    ax3.set_ylabel("Jumlah pesanan batal")
+                    ax3.legend(fontsize=7, loc="upper left", bbox_to_anchor=(1, 1))
+                    plt.setp(ax3.get_xticklabels(), rotation=45, ha="right")
+                    fig3.tight_layout()
+                    st.pyplot(fig3)
+                else:
+                    st.caption("Tanggal pesanan tidak terbaca, komposisi bulanan tidak dapat ditampilkan.")
 
             st.markdown("**Rasio pembatalan per toko**")
-            by_store = (
-                scoped.groupby("store")
-                .agg(total=("target", "size"), batal=("target", lambda s: (s == 1).sum()))
-                .assign(rasio=lambda d: d["batal"] / d["total"] * 100)
-                .sort_values("batal", ascending=False)
-                .reset_index()
-                .rename(columns={"store": "Nama Toko", "total": "Total Pesanan",
-                                  "batal": "Jumlah Batal", "rasio": "Rasio Batal (%)"})
-            )
-            st.dataframe(
-                by_store.style.format({"Rasio Batal (%)": "{:.1f}%"}),
-                use_container_width=True, height=min(380, 60 + 35 * len(by_store)),
-            )
+            st.dataframe(highlight(by_store), use_container_width=True,
+                         height=min(380, 60 + 35 * len(by_store)))
+
+            st.markdown("**Rasio pembatalan per provinsi (top 10 volume batal)**")
+            st.dataframe(highlight(by_prov), use_container_width=True, height=380)
 
             st.markdown("**Rasio pembatalan per kategori produk (top 10 volume batal)**")
-            by_cat = (
-                scoped.groupby("category")
-                .agg(total=("target", "size"), batal=("target", lambda s: (s == 1).sum()))
-                .assign(rasio=lambda d: d["batal"] / d["total"] * 100)
-                .sort_values("batal", ascending=False)
-                .head(10)
-                .reset_index()
-                .rename(columns={"category": "Kategori Produk", "total": "Total Pesanan",
-                                  "batal": "Jumlah Batal", "rasio": "Rasio Batal (%)"})
-            )
-            st.dataframe(
-                by_cat.style.format({"Rasio Batal (%)": "{:.1f}%"}),
-                use_container_width=True, height=380,
-            )
+            st.dataframe(highlight(by_cat), use_container_width=True, height=380)
 
             st.markdown("**Rasio pembatalan per produk (Seller SKU diterjemahkan ke nama produk, top 10 volume batal)**")
-            sku_lookup = get_sku_lookup()
-            scoped_prod = scoped.assign(
-                produk=scoped["sku"].apply(lambda s: map_sku_to_product(s, sku_lookup))
-            )
-            by_prod = (
-                scoped_prod.groupby("produk")
-                .agg(total=("target", "size"), batal=("target", lambda s: (s == 1).sum()))
-                .assign(rasio=lambda d: d["batal"] / d["total"] * 100)
-                .sort_values("batal", ascending=False)
-                .head(10)
-                .reset_index()
-                .rename(columns={"produk": "Produk", "total": "Total Pesanan",
-                                  "batal": "Jumlah Batal", "rasio": "Rasio Batal (%)"})
-            )
-            st.dataframe(
-                by_prod.style.format({"Rasio Batal (%)": "{:.1f}%"}),
-                use_container_width=True, height=380,
-            )
+            st.dataframe(highlight(by_prod), use_container_width=True, height=380)
             if not sku_lookup["exact"] and not sku_lookup["prefix"]:
                 st.caption(
                     "Katalog kode produk (reference/kode_produk.xlsx) tidak ditemukan -- "
