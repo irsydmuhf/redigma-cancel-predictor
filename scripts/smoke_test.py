@@ -16,11 +16,9 @@ opts = get_dropdown_options(bundle)
 print("dropdown option counts:", {k: len(v) for k, v in opts.items()})
 
 sample = {
-    "product_name": "Vitamin C 1000mg Paket 3 Box Original BPOM Garansi",
     "category": opts["category"][0],
     "sku": opts["sku"][0],
     "qty": 2,
-    "n_lines": 1,
     "subtotal_before": 150000.0,
     "subtotal_after": 120000.0,
     "total_discount": 30000.0,

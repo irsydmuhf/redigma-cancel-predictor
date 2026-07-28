@@ -3,10 +3,11 @@
 imbalanced) dan simpan artefaknya untuk dipakai app.py.
 
 Logika feature engineering & training di file ini SENGAJA disalin persis dari
-02_pipeline/redigma_pipeline_v2.py pada repo skripsi (fungsi load_order_level,
-build_xy_v2, make_pipeline) supaya model yang dihasilkan cocok dengan angka yang
-dilaporkan di Tabel 4.1 / 4.1b skripsi (Macro-F1 = 0,5512; ROC-AUC = 0,5876).
-Kalau butuh menelusuri asalnya, file itu ada di repo skripsi terpisah.
+02_pipeline/redigma_pipeline_v5_selected.py pada repo skripsi (fitur 16 hasil
+seleksi statistik FDR, bukan seluruh 29 fitur rekayasa) supaya model yang
+dihasilkan cocok dengan angka yang dilaporkan di Tabel 4.1 / 4.1b skripsi
+(S3: Macro F1 = 0,5249; ROC-AUC = 0,5875). Kalau butuh menelusuri asalnya,
+file itu ada di repo skripsi terpisah.
 
 Cara pakai:
     1. Taruh file Excel data pesanan (kolom-kolom sama seperti dataset asli
@@ -48,7 +49,6 @@ from src.raw_data import load_order_level  # noqa: E402
 from src.schema import (  # noqa: E402
     BEST_XGB_PARAMS,
     CLASSIFICATION_THRESHOLD,
-    FIXED_VALUES,
     NUM_FEATURES,
     ONEHOT_COLS,
     RANDOM_STATE,
@@ -140,8 +140,8 @@ def main():
     for k, v in metrics_default_threshold.items():
         log(f"  {k:12s}: {v:.4f}")
     log()
-    log("Referensi dari skripsi (Tabel 4.1, S3: XGBoost + Imbalanced):")
-    log("  accuracy=0.8448 precision=0.3333 recall=0.1311 macro_f1=0.5512 roc_auc=0.5876")
+    log("Referensi dari skripsi (Tabel 4.1, S3: XGBoost + Imbalanced, 16 fitur terpilih):")
+    log("  accuracy=0.8430 precision=0.2773 recall=0.0902 macro_f1=0.5249 roc_auc=0.5875")
     log("Kalau angka di atas jauh berbeda, kemungkinan data input berbeda dari data asli skripsi.")
 
     yp_thr = (pp >= CLASSIFICATION_THRESHOLD).astype(int)
@@ -152,13 +152,13 @@ def main():
         "f1_cancel": f1_score(y_test, yp_thr, pos_label=1, zero_division=0),
     }
     log()
-    log(f"--- Metrik pada threshold={CLASSIFICATION_THRESHOLD} (dipakai app.py, sesuai Sub-bab 4.2.3) ---")
+    log(f"--- Metrik pada threshold={CLASSIFICATION_THRESHOLD} (referensi smoke_test.py saja, TIDAK dipakai app.py) ---")
     for k, v in metrics_used_threshold.items():
         log(f"  {k:12s}: {v}")
 
     # Sapuan precision/recall/F1 di berbagai threshold (0,05-0,95) pada data uji --
-    # dipakai app.py utk slider threshold interaktif (biar precision/recall trade-off
-    # kelihatan, bukan cuma satu angka fixed). Sama semangatnya dengan Tabel 4.2 skripsi.
+    # disimpan di bundle utk referensi/smoke_test.py saja. app.py (mode diagnostik)
+    # tidak memakai threshold apa pun, jadi sapuan ini murni informasional.
     threshold_sweep = []
     for t in np.arange(0.05, 0.96, 0.05):
         t = round(float(t), 2)
@@ -172,7 +172,7 @@ def main():
             "n_flagged_pct": float(yp_t.mean()),
         })
     log()
-    log("--- Sapuan threshold (dipakai untuk slider di app.py) ---")
+    log("--- Sapuan threshold (referensi/smoke_test.py saja) ---")
     for row in threshold_sweep:
         log(
             f"  thr={row['threshold']:.2f} | precision={row['precision']:.3f} "
@@ -180,9 +180,10 @@ def main():
             f"flagged={row['n_flagged_pct']:.1%}"
         )
 
-    # Referensi dropdown untuk form Streamlit: kategori yang benar-benar dilihat model saat training.
+    # Referensi dropdown untuk scripts/smoke_test.py: kategori yang benar-benar dilihat
+    # model saat training (app.py mode diagnostik tidak memakai form/dropdown ini).
     dropdown_options = {c: sorted(o[c].dropna().astype(str).unique().tolist()) for c in TE_COLS}
-    dropdown_options.update({c: list(le.classes_) for c, le in label_encoders.items() if c not in FIXED_VALUES})
+    dropdown_options.update({c: list(le.classes_) for c, le in label_encoders.items()})
 
     bundle = {
         "pipeline": pipe,
