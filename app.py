@@ -9,11 +9,11 @@ ada skor probabilitas atau label prediksi yang ditampilkan ke pengguna.
 Jalankan: streamlit run app.py
 (model harus sudah dilatih lebih dulu lewat scripts/train.py -- lihat README.md)
 """
-import matplotlib
-matplotlib.use("Agg")
-import matplotlib.pyplot as plt
 import pandas as pd
+import plotly.express as px
 import streamlit as st
+
+REDIGMA_RED = "#d62728"
 
 from src.predict import diagnose_batch, load_bundle
 from src.product_lookup import load_sku_to_product, map_sku_to_product
@@ -224,11 +224,17 @@ if uploaded is not None:
                 )
             with c2:
                 top = recap.sort_values("Jumlah Pesanan").tail(12)
-                fig, ax = plt.subplots(figsize=(6, 4.2))
-                ax.barh(top["Faktor Dominan"], top["Jumlah Pesanan"], color="#d62728")
-                ax.set_xlabel("Jumlah pesanan batal")
-                fig.tight_layout()
-                st.pyplot(fig)
+                fig = px.bar(
+                    top, x="Jumlah Pesanan", y="Faktor Dominan", orientation="h",
+                    color="Jumlah Pesanan", color_continuous_scale="Reds",
+                    text="Jumlah Pesanan",
+                )
+                fig.update_traces(textposition="outside")
+                fig.update_layout(
+                    coloraxis_showscale=False, margin=dict(l=0, r=10, t=10, b=0),
+                    yaxis_title=None, xaxis_title="Jumlah pesanan batal", height=420,
+                )
+                st.plotly_chart(fig, use_container_width=True)
 
             st.caption(
                 "Faktor dominan dihitung per pesanan lewat SHAP (fitur dengan pengaruh absolut "
@@ -244,13 +250,15 @@ if uploaded is not None:
             with i1:
                 st.markdown("**Tren bulanan pesanan batal**")
                 if not monthly.empty:
-                    fig2, ax2 = plt.subplots(figsize=(5.5, 3.5))
-                    ax2.plot(monthly["bulan"], monthly["Jumlah Batal"], marker="o", color="#d62728")
-                    ax2.set_xlabel("Bulan")
-                    ax2.set_ylabel("Jumlah pesanan batal")
-                    plt.setp(ax2.get_xticklabels(), rotation=45, ha="right")
-                    fig2.tight_layout()
-                    st.pyplot(fig2)
+                    fig2 = px.line(
+                        monthly, x="bulan", y="Jumlah Batal", markers=True,
+                        color_discrete_sequence=[REDIGMA_RED],
+                    )
+                    fig2.update_layout(
+                        margin=dict(l=0, r=10, t=10, b=0),
+                        xaxis_title="Bulan", yaxis_title="Jumlah pesanan batal", height=380,
+                    )
+                    st.plotly_chart(fig2, use_container_width=True)
                 else:
                     st.caption("Tanggal pesanan tidak terbaca, tren bulanan tidak dapat ditampilkan.")
 
@@ -262,19 +270,18 @@ if uploaded is not None:
                 top5 = recap["Faktor Dominan"].head(5).tolist()
                 diag_dated["kelompok"] = diag_dated["Faktor Dominan"].where(
                     diag_dated["Faktor Dominan"].isin(top5), "Lainnya")
-                pivot = diag_dated.groupby(["bulan", "kelompok"]).size().unstack(fill_value=0).sort_index()
-                if not pivot.empty:
-                    fig3, ax3 = plt.subplots(figsize=(5.5, 3.5))
-                    bottom = None
-                    for col in pivot.columns:
-                        ax3.bar(pivot.index, pivot[col], bottom=bottom, label=col)
-                        bottom = pivot[col] if bottom is None else bottom + pivot[col]
-                    ax3.set_xlabel("Bulan")
-                    ax3.set_ylabel("Jumlah pesanan batal")
-                    ax3.legend(fontsize=7, loc="upper left", bbox_to_anchor=(1, 1))
-                    plt.setp(ax3.get_xticklabels(), rotation=45, ha="right")
-                    fig3.tight_layout()
-                    st.pyplot(fig3)
+                long = diag_dated.groupby(["bulan", "kelompok"]).size().reset_index(name="Jumlah")
+                if not long.empty:
+                    fig3 = px.bar(
+                        long.sort_values("bulan"), x="bulan", y="Jumlah", color="kelompok",
+                        color_discrete_sequence=px.colors.sequential.Reds_r[:5] + ["#bbbbbb"],
+                    )
+                    fig3.update_layout(
+                        barmode="stack", margin=dict(l=0, r=0, t=10, b=0),
+                        xaxis_title="Bulan", yaxis_title="Jumlah pesanan batal",
+                        legend_title=None, legend=dict(font=dict(size=10)), height=380,
+                    )
+                    st.plotly_chart(fig3, use_container_width=True)
                 else:
                     st.caption("Tanggal pesanan tidak terbaca, komposisi bulanan tidak dapat ditampilkan.")
 
