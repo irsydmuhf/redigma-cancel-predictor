@@ -100,13 +100,15 @@ if uploaded is not None:
                                             min_value=min_d, max_value=max_d)
             else:
                 date_range = None
-            f1, f2, f3 = st.columns(3)
+            f1, f2, f3, f4 = st.columns(4)
             cat_opts = sorted(order_level["category"].dropna().unique().tolist())
             prov_opts = sorted(order_level["province"].dropna().unique().tolist())
             pay_opts = sorted(order_level["payment"].dropna().unique().tolist())
+            store_opts = sorted(order_level["store"].dropna().unique().tolist())
             sel_cat = f1.multiselect("Kategori produk", cat_opts)
             sel_prov = f2.multiselect("Provinsi", prov_opts)
             sel_pay = f3.multiselect("Metode pembayaran", pay_opts)
+            sel_store = f4.multiselect("Nama toko", store_opts)
 
         mask = pd.Series(True, index=order_level.index)
         if date_range and isinstance(date_range, tuple) and len(date_range) == 2:
@@ -118,6 +120,8 @@ if uploaded is not None:
             mask &= order_level["province"].isin(sel_prov)
         if sel_pay:
             mask &= order_level["payment"].isin(sel_pay)
+        if sel_store:
+            mask &= order_level["store"].isin(sel_store)
 
         scoped = order_level[mask].copy()
         cancelled = scoped[scoped["target"] == 1].copy()
@@ -203,6 +207,21 @@ if uploaded is not None:
                     by_prov.style.format({"Rasio Batal (%)": "{:.1f}%"}),
                     use_container_width=True, height=380,
                 )
+
+            st.markdown("**Rasio pembatalan per toko**")
+            by_store = (
+                scoped.groupby("store")
+                .agg(total=("target", "size"), batal=("target", lambda s: (s == 1).sum()))
+                .assign(rasio=lambda d: d["batal"] / d["total"] * 100)
+                .sort_values("batal", ascending=False)
+                .reset_index()
+                .rename(columns={"store": "Nama Toko", "total": "Total Pesanan",
+                                  "batal": "Jumlah Batal", "rasio": "Rasio Batal (%)"})
+            )
+            st.dataframe(
+                by_store.style.format({"Rasio Batal (%)": "{:.1f}%"}),
+                use_container_width=True, height=min(380, 60 + 35 * len(by_store)),
+            )
 
             st.markdown("**Rasio pembatalan per kategori produk (top 10 volume batal)**")
             by_cat = (

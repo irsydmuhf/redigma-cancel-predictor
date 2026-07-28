@@ -26,7 +26,7 @@ REQUIRED_RAW_COLUMNS = [
     "Product Category", "Province", "Purchase Channel", "Fulfillment Type",
     "Delivery Option", "Normal or Pre-order", "Seller SKU", "Product Name",
 ]
-OPTIONAL_RAW_COLUMNS = ["db_pk_pesanan"]
+OPTIONAL_RAW_COLUMNS = ["db_pk_pesanan", "Nama Toko"]
 
 
 def log(*a):
@@ -116,6 +116,7 @@ def load_order_level(input_path_or_buffer, require_target: bool = True) -> pd.Da
             f"sama dengan ekspor 'Order SKU List' platform: {missing}"
         )
     has_pk = "db_pk_pesanan" in raw.columns
+    has_store = "Nama Toko" in raw.columns
 
     # Sebagian ekspor "Order SKU List" menyisipkan satu baris deskripsi kolom tepat di
     # bawah header (mis. "Platform unique order ID.", "Current order status.") -- bukan
@@ -175,8 +176,12 @@ def load_order_level(input_path_or_buffer, require_target: bool = True) -> pd.Da
     )
     if has_pk:
         agg_kwargs["pk"] = ("db_pk_pesanan", "first")
+    if has_store:
+        agg_kwargs["store"] = ("Nama Toko", mode_first)
 
     o = raw_f.groupby("Order ID").agg(**agg_kwargs).reset_index()
+    if not has_store:
+        o["store"] = "Tidak diketahui"
     o["target"] = o["Order ID"].map(order_target)
 
     o["total_discount"] = o["plat_disc"] + o["seller_disc"]
