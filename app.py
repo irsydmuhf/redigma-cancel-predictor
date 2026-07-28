@@ -16,8 +16,14 @@ import pandas as pd
 import streamlit as st
 
 from src.predict import diagnose_batch, load_bundle
+from src.product_lookup import load_sku_to_product, map_sku_to_product
 from src.raw_data import load_order_level
 from src.reference_data import format_model_info
+
+
+@st.cache_resource
+def get_sku_lookup():
+    return load_sku_to_product()
 
 st.set_page_config(page_title="Rekap Faktor Pembatalan Pesanan REDIGMA", page_icon="📦", layout="wide")
 
@@ -213,6 +219,31 @@ if uploaded is not None:
                 by_cat.style.format({"Rasio Batal (%)": "{:.1f}%"}),
                 use_container_width=True, height=380,
             )
+
+            st.markdown("**Rasio pembatalan per produk (Seller SKU diterjemahkan ke nama produk, top 10 volume batal)**")
+            sku_lookup = get_sku_lookup()
+            scoped_prod = scoped.assign(
+                produk=scoped["sku"].apply(lambda s: map_sku_to_product(s, sku_lookup))
+            )
+            by_prod = (
+                scoped_prod.groupby("produk")
+                .agg(total=("target", "size"), batal=("target", lambda s: (s == 1).sum()))
+                .assign(rasio=lambda d: d["batal"] / d["total"] * 100)
+                .sort_values("batal", ascending=False)
+                .head(10)
+                .reset_index()
+                .rename(columns={"produk": "Produk", "total": "Total Pesanan",
+                                  "batal": "Jumlah Batal", "rasio": "Rasio Batal (%)"})
+            )
+            st.dataframe(
+                by_prod.style.format({"Rasio Batal (%)": "{:.1f}%"}),
+                use_container_width=True, height=380,
+            )
+            if not sku_lookup["exact"] and not sku_lookup["prefix"]:
+                st.caption(
+                    "Katalog kode produk (reference/kode_produk.xlsx) tidak ditemukan -- "
+                    "tabel di atas menampilkan kode Seller SKU mentah."
+                )
 
             st.divider()
             detail = cancelled[["Order ID"]].merge(diag, on="Order ID")
