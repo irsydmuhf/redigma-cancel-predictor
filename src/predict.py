@@ -163,6 +163,49 @@ def predict_batch(order_level_df: pd.DataFrame, bundle: dict) -> pd.DataFrame:
     return result
 
 
+def diagnose_batch(order_level_df: pd.DataFrame, bundle: dict) -> pd.DataFrame:
+    """Mode diagnostik (bukan prediksi): cari faktor SHAP paling dominan untuk
+    tiap pesanan yang STATUSNYA SUDAH DIKETAHUI batal (order_level_df harus sudah
+    difilter target==1 sebelum dipanggil -- lihat app.py). Tidak menghitung atau
+    menampilkan probabilitas/threshold, karena status pesanan bukan estimasi,
+    melainkan fakta yang sudah terjadi; yang ingin diketahui hanya PENYEBABNYA."""
+    num_features = bundle["num_features"]
+    te_cols = bundle["te_cols"]
+    onehot_cols = bundle["onehot_cols"]
+    ordered_cols = num_features + te_cols + onehot_cols
+
+    X = order_level_df[ordered_cols].copy()
+    X[num_features] = X[num_features].replace([np.inf, -np.inf], np.nan)
+    X[num_features] = X[num_features].apply(lambda s: s.fillna(s.median()))
+    for c in te_cols + onehot_cols:
+        X[c] = X[c].astype(str).fillna("UNK").replace("nan", "UNK")
+    for c in onehot_cols:
+        X[c] = _safe_label_transform(bundle["label_encoders"][c], X[c])
+
+    pipe = bundle["pipeline"]
+    te_step = pipe.named_steps["te"]
+    clf_step = pipe.named_steps["clf"]
+    X_numeric = te_step.transform(X)
+
+    explainer = shap.TreeExplainer(clf_step)
+    explanation = explainer(X_numeric)
+    shap_values = np.asarray(explanation.values)
+
+    top_factor, top_arah = [], []
+    for i in range(len(X_numeric)):
+        row_shap = shap_values[i]
+        top_idx = int(np.argmax(np.abs(row_shap)))
+        feat = X_numeric.columns[top_idx]
+        top_factor.append(FEATURE_LABELS_ID.get(feat, feat))
+        top_arah.append("meningkatkan risiko" if row_shap[top_idx] > 0 else "menurunkan risiko")
+
+    return pd.DataFrame({
+        "Order ID": order_level_df["Order ID"].values,
+        "Faktor Dominan": top_factor,
+        "Arah": top_arah,
+    })
+
+
 def label_predictions(results: pd.DataFrame, threshold: float) -> pd.DataFrame:
     """Tambahkan kolom "Prediksi" ke hasil predict_batch() berdasarkan threshold
     pilihan user, lalu urutkan dari probabilitas tertinggi. Murah secara komputasi
