@@ -1,10 +1,14 @@
-"""Alat bantu diagnostik: rekap faktor penyebab pembatalan pesanan REDIGMA
-(PT Relasi Digital Marketing), memakai model XGBoost skenario S3 dari skripsi
-"Klasifikasi Pembatalan Pesanan E-Commerce ... dan Analisis Faktor" (Irsyad
-Muhamad Firdaus). Sesuai konsep pada Sub-bab 3.2.3 skripsi: alat ini BUKAN
-prediktor real-time -- hanya menganalisis pesanan yang STATUSNYA SUDAH batal,
-lalu merekap faktor apa yang paling sering menjadi penyebab dominannya. Tidak
-ada skor probabilitas atau label prediksi yang ditampilkan ke pengguna.
+"""Implementasi sistem klasifikasi pembatalan pesanan REDIGMA (PT Relasi Digital
+Marketing), berdasarkan skripsi "Klasifikasi Pembatalan Pesanan E-Commerce
+Menggunakan Machine Learning dan Analisis Faktor" (Irsyad Muhamad Firdaus).
+Aplikasi ini menjawab ketiga rumusan masalah skripsi secara langsung:
+  RM1 -- model klasifikasi (XGBoost, skenario S3) dipakai untuk mengklasifikasi
+         pesanan lewat probabilitas & label prediksi.
+  RM2 -- perbandingan performa Logistic Regression vs XGBoost (Tabel 4.1)
+         ditampilkan sebagai referensi hasil evaluasi model.
+  RM3 -- faktor dominan penyebab pembatalan direkap lewat interpretasi SHAP,
+         baik untuk pesanan yang statusnya sudah diketahui batal (rekap faktor)
+         maupun sebagai bagian dari penjelasan tiap hasil klasifikasi.
 
 Jalankan: streamlit run app.py
 (model harus sudah dilatih lebih dulu lewat scripts/train.py -- lihat README.md)
@@ -15,10 +19,22 @@ import streamlit as st
 
 REDIGMA_RED = "#d62728"
 
-from src.predict import diagnose_batch, load_bundle
+from src.predict import diagnose_batch, label_predictions, load_bundle, predict_batch
 from src.product_lookup import load_sku_to_product, map_sku_to_product
 from src.raw_data import load_order_level
 from src.reference_data import format_model_info
+
+# Tabel 4.1 skripsi -- Perbandingan Performa Lima Skenario pada Data Uji.
+# Statis (bukan dihitung ulang saat runtime) karena LR tidak ikut dideploy;
+# tabel ini murni referensi RM2 (perbandingan algoritma), sedangkan model yang
+# benar-benar dipakai aplikasi untuk RM1 adalah XGBoost skenario S3.
+SCENARIO_COMPARISON = [
+    {"Skenario": "S1: LR + Imbalanced", "Accuracy": 0.8651, "Precision": 0.6500, "Recall": 0.0355, "Macro F1": 0.4973, "ROC-AUC": 0.6439},
+    {"Skenario": "S2: LR + SMOTE-NC", "Accuracy": 0.6855, "Precision": 0.2091, "Recall": 0.4645, "Macro F1": 0.5433, "ROC-AUC": 0.6344},
+    {"Skenario": "S3: XGBoost + Imbalanced (dipakai aplikasi ini)", "Accuracy": 0.8430, "Precision": 0.2773, "Recall": 0.0902, "Macro F1": 0.5249, "ROC-AUC": 0.5875},
+    {"Skenario": "S4: XGBoost + SMOTE-NC", "Accuracy": 0.8291, "Precision": 0.2443, "Recall": 0.1175, "Macro F1": 0.5318, "ROC-AUC": 0.5778},
+    {"Skenario": "S5: XGBoost + 2 Fitur Teratas", "Accuracy": 0.8576, "Precision": 0.3333, "Recall": 0.0383, "Macro F1": 0.4958, "ROC-AUC": 0.5915},
+]
 
 
 @st.cache_resource
@@ -39,28 +55,52 @@ except FileNotFoundError as e:
     st.error(str(e))
     st.stop()
 
-st.title("📦 Rekap Faktor Penyebab Pembatalan Pesanan")
+st.title("📦 Klasifikasi & Analisis Faktor Pembatalan Pesanan")
 st.caption(
-    "Alat bantu diagnostik dari skripsi klasifikasi pembatalan pesanan e-commerce REDIGMA "
-    "(model: XGBoost skenario S3, lihat Bab 4). Menganalisis pesanan yang **sudah** "
-    "berstatus batal -- bukan memprediksi pesanan yang masih berjalan."
+    "Implementasi sistem dari skripsi klasifikasi pembatalan pesanan e-commerce REDIGMA -- "
+    "menampilkan hasil klasifikasi model (RM1), perbandingan performa algoritma (RM2), "
+    "dan rekap faktor dominan penyebab pembatalan lewat SHAP (RM3)."
 )
 with st.expander("ℹ️ Tentang model & keterbatasannya", expanded=False):
     st.markdown(
         f"""
-- Model: **XGBoost** (skenario S3 pada Bab 4 skripsi -- Macro F1 tertinggi di antara lima skenario yang dibandingkan).
+- Model yang dipakai aplikasi ini: **XGBoost** (skenario S3 pada Bab 4 skripsi).
 - {format_model_info(bundle)}
 - Fitur risiko per wilayah/metode bayar/kategori/SKU dihitung dari riwayat data training (*smoothed target encoding*) -- kombinasi yang sangat jarang muncul di data training akan condong ke rata-rata global, bukan kesalahan sistem.
-- Alat ini **tidak** menampilkan skor probabilitas atau label prediksi. Fokusnya adalah menjelaskan pesanan yang statusnya sudah diketahui batal, sebagai bahan evaluasi internal (lihat Sub-bab 3.2.3 & 4.2.4 skripsi), bukan mengambil keputusan otomatis untuk pesanan yang sedang berjalan.
+- **Precision model tergolong rendah** (lihat tabel perbandingan di bawah) -- dari seluruh pesanan yang diprediksi "Berpotensi Dibatalkan", tidak semuanya benar-benar akan batal. Hasil klasifikasi sebaiknya dipakai sebagai bahan pertimbangan/prioritas pemantauan, bukan keputusan otomatis tunggal.
         """
+    )
+
+with st.expander("📊 Perbandingan Performa Model -- Logistic Regression vs XGBoost (RM2)", expanded=False):
+    st.markdown(
+        "Ringkasan hasil evaluasi lima skenario eksperimen pada data uji (Tabel 4.1 skripsi). "
+        "Baris yang ditandai adalah model yang dipakai aplikasi ini."
+    )
+    comp_df = pd.DataFrame(SCENARIO_COMPARISON)
+
+    def _highlight_used(row):
+        return ["background-color: #fdf3dd" if "dipakai aplikasi ini" in row["Skenario"] else "" for _ in row]
+
+    st.dataframe(
+        comp_df.style.apply(_highlight_used, axis=1).format({
+            "Accuracy": "{:.4f}", "Precision": "{:.4f}", "Recall": "{:.4f}",
+            "Macro F1": "{:.4f}", "ROC-AUC": "{:.4f}",
+        }),
+        use_container_width=True, hide_index=True,
+    )
+    st.caption(
+        "Macro F1 tertinggi diperoleh S2 (Logistic Regression + SMOTE-NC), tetapi uji signifikansi "
+        "(koreksi Nadeau-Bengio) menunjukkan S2, S3, dan S4 tidak berbeda signifikan secara statistik "
+        "(Sub-bab 4.3.3 skripsi) -- ketiganya setara, bukan salah satu terbukti unggul."
     )
 
 st.divider()
 
 st.markdown(
     "Upload file ekspor **\"Order SKU List\"** langsung dari platform (format xlsx apa adanya, "
-    "tidak perlu diedit dulu). File boleh berisi pesanan dengan status apa pun -- app akan "
-    "otomatis memilih hanya baris yang **sudah berstatus batal** untuk dianalisis."
+    "tidak perlu diedit dulu). File boleh berisi pesanan dengan status apa pun -- **seluruh "
+    "pesanan** akan diklasifikasikan modelnya, sedangkan rekap faktor dominan (RM3) khusus "
+    "dihitung dari baris yang **sudah berstatus batal**."
 )
 uploaded = st.file_uploader("File Order SKU List (.xlsx)", type=["xlsx"])
 
@@ -132,6 +172,50 @@ if uploaded is not None:
         m1.metric("Pesanan pada cakupan filter", n_scope)
         m2.metric("Berstatus batal", n_cancel)
         m3.metric("Rasio pembatalan", f"{(n_cancel / n_scope * 100 if n_scope else 0):.1f}%")
+
+        # ------------------------------------------------------- hasil klasifikasi (RM1)
+        st.divider()
+        st.subheader("Hasil Klasifikasi Model")
+        st.caption(
+            "Model mengklasifikasi SETIAP pesanan pada cakupan filter (bukan hanya yang "
+            "sudah batal) berdasarkan probabilitas pembatalan. Threshold dapat diatur di "
+            "bawah ini untuk melihat trade-off precision/recall."
+        )
+        default_thr = float(bundle["threshold"])
+        thr = st.slider(
+            "Ambang batas (threshold) klasifikasi", min_value=0.05, max_value=0.95,
+            value=default_thr, step=0.05,
+            help="Probabilitas >= ambang batas ini diklasifikasikan sebagai 'Berpotensi Dibatalkan'.",
+        )
+        with st.spinner("Menjalankan klasifikasi model..."):
+            pred_raw = predict_batch(scoped, bundle)
+            pred_labeled = label_predictions(pred_raw, thr)
+
+        n_flagged = int((pred_labeled["Prediksi"] == "Berpotensi Dibatalkan").sum())
+        pm1, pm2, pm3 = st.columns(3)
+        pm1.metric("Diklasifikasikan 'Berpotensi Dibatalkan'", n_flagged)
+        pm2.metric("Ambang batas dipakai", f"{thr:.2f}")
+        near = None
+        try:
+            from src.predict import nearest_threshold_stats
+            near = nearest_threshold_stats(bundle, thr)
+        except Exception:
+            near = None
+        if near:
+            pm3.metric("Perkiraan precision pada ambang ini", f"{near['precision']:.1%}")
+
+        st.dataframe(
+            pred_labeled.style.format({"Probabilitas Dibatalkan": "{:.1%}"})
+            .background_gradient(subset=["Probabilitas Dibatalkan"], cmap="Reds"),
+            use_container_width=True, height=380,
+        )
+        st.caption(
+            "\"Faktor Utama\" pada tabel ini adalah fitur dengan kontribusi SHAP absolut "
+            "terbesar terhadap probabilitas klasifikasi pesanan tersebut."
+        )
+        pred_csv = pred_labeled.to_csv(index=False).encode("utf-8-sig")
+        st.download_button("⬇️ Download hasil klasifikasi (CSV)", data=pred_csv,
+                            file_name="hasil_klasifikasi_pesanan.csv", mime="text/csv")
 
         if n_cancel == 0:
             st.warning("Tidak ada pesanan berstatus batal pada cakupan filter saat ini.")
